@@ -1,2 +1,222 @@
-main {
+/* Base Styles */
+body {
+  font-family: Arial, sans-serif;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.App {
+  font-family: Arial, sans-serif;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.tabs {
+  display: flex;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #ddd;
+}
+
+.tabs button {
+  padding: 10px 20px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  margin-right: 5px;
+  border-radius: 4px 4px 0 0;
+}
+
+.tabs button.active {
+  background-color: #2196F3;
+  color: white;
+}
+
+.batches-list {
+  margin: 30px 0;
+}
+
+.batches-list ul {
+  list-style: none;
+  padding: 0;
+}
+
+.batches-list li {
+  margin: 10px 0;
+}
+
+.batch-button {
+  padding: 12px 20px;
+  width: 100%;
+  background-color: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  text-align: left;
+}
+
+.batch-button:hover {
+  background-color: #0b7dda;
+}
+
+.attendance-section, .management-section {
+  margin-top: 20px;
+}
+
+.back-button {
+  background: none;
+  border: none;
+  color: #2196F3;
+  cursor: pointer;
+  font-size: 16px;
+  margin-bottom: 20px;
+  padding: 5px;
+}
+
+.back-button:hover {
+  text-decoration: underline;
+}
+
+.date-picker {
+  margin: 20px 0;
+}
+
+.attendance-list, .student-table {
+  margin: 30px 0;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+
+th, td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #ddd;
+}
+
+th {
+  background-color: #f2f2f2;
+}
+
+button {
+  padding: 8px 16px;
+  margin: 5px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button.present {
+  background-color: #4CAF50;
+  color: white;
+}
+
+button.absent {
+  background-color: #f44336;
+  color: white;
+}
+
+.delete-btn {
+  background-color: #ff4444;
+  color: white;
+}
+
+.delete-btn:hover {
+  background-color: #cc0000;
+}
+
+.actions {
+  margin: 20px 0;
+}
+
+.message {
+  padding: 15px;
+  background-color: #e7f3fe;
+  border-left: 6px solid #2196F3;
+  margin: 20px 0;
+}
+
+.form-group {
+  margin: 20px 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  align-items: center;
+}
+
+.form-group input, .form-group select {
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+
+@media (max-width: 768px) {
+  .form-group {
+    grid-template-columns: 1fr;
+  }
+
+  /* Tests Section Styles */
+  .tests-section {
+    margin-top: 20px;
+  }
+
+  .test-info {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+
+  .test-info input {
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    flex: 1;
+  }
+
+  .marks-table input {
+    width: 80px;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  }
+
+  .marks-table td {
+    vertical-align: middle;
+  }
+
+  /* Footer Styles */
+  .app-footer {
+    margin-top: 50px;
+    padding: 20px;
+    text-align: center;
+    color: #888; /* Light gray text */
+    font-size: 0.8rem;
+    border-top: 1px solid #eee;
+    background-color: #f9f9f9;
+  }
+
+  /* Makes footer stick to bottom */
+  .App {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  main {
+    flex: 1;
+  }
 }
