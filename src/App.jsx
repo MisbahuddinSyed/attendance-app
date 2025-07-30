@@ -16,8 +16,6 @@ import {
 import { db } from './firebase';
 // Add this with your other imports
 import axios from 'axios';
-import { sendMessage } from './messagingService';
-
 const getToday = () => new Date().toISOString().split('T')[0];
 
 function App() {
