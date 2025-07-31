@@ -688,7 +688,7 @@ function App() {
         <div className="App">
           <header className="App-header">
             <img src="/logo.svg" alt="School Logo" className="logo" />
-            <h1>Tuition Class Attendance System</h1>
+            <h1>Attendance System</h1>
           </header>
         <main> 
 
