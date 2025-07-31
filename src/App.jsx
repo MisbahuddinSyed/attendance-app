@@ -1,21 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './App.css';
 import {
   collection,
   addDoc,
   getDocs,
-  query,
-  where,
   deleteDoc,
   doc,
   getDoc,
   setDoc,
-  Timestamp,
-  writeBatch
+  Timestamp
 } from 'firebase/firestore';
 import { db } from './firebase';
-// Add this with your other imports
 import axios from 'axios';
+
 const getToday = () => new Date().toISOString().split('T')[0];
 
 function App() {
@@ -29,13 +26,40 @@ function App() {
   const [newBatch, setNewBatch] = useState('');
   const [newStudent, setNewStudent] = useState({ name: '', phone: '', batchId: '' });
   const [isSending, setIsSending] = useState(false);
-
-  // Add this with your other state declarations
+  const [networkStatus, setNetworkStatus] = useState(navigator.onLine);
+  const [pendingMessages, setPendingMessages] = useState([]);
   const [testData, setTestData] = useState({
     testName: '',
     totalMarks: '',
-    marks: {} // Will store { studentId: { obtained: '', total: '' } }
+    marks: {}
   });
+
+  const WASENDER_API_KEY = "8cad52725d4bddf6fccff9574ba590b722ffc1d51e24b83e8041fc3a26acea69";
+
+  // Load pending messages from localStorage
+  useEffect(() => {
+    const storedMessages = localStorage.getItem('pendingMessages');
+    if (storedMessages) {
+      setPendingMessages(JSON.parse(storedMessages));
+    }
+  }, []);
+
+  // Network status listener
+  useEffect(() => {
+    const handleOnline = () => {
+      setNetworkStatus(true);
+      sendPendingMessages();
+    };
+    const handleOffline = () => setNetworkStatus(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Load initial data
   useEffect(() => {
@@ -62,17 +86,19 @@ function App() {
   }, []);
 
   // Helper functions
-  const getStudentsForBatch = (batchId) => data.students.filter(s => s.batchId === batchId);
+  const getStudentsForBatch = useCallback((batchId) => {
+    return data.students.filter(s => s.batchId === batchId);
+  }, [data.students]);
 
-  const getTodaysAttendance = () => {
+  const getTodaysAttendance = useCallback(() => {
     if (!selectedBatch) return [];
     const today = getToday();
     const record = data.attendance.find(r => r.batchId === selectedBatch && r.date === today) || { students: [] };
     return getStudentsForBatch(selectedBatch).map(s => ({
       ...s,
-      present: !record.students.includes(s.id)
+      present: record.students.includes(s.id)
     }));
-  };
+  }, [selectedBatch, data.attendance, getStudentsForBatch]);
 
   // Attendance functions
   const toggleAttendance = async (studentId, isCurrentlyPresent) => {
@@ -91,16 +117,15 @@ function App() {
       };
 
       if (isCurrentlyPresent) {
+        attendanceData.students = attendanceData.students.filter(id => id !== studentId);
+      } else {
         if (!attendanceData.students.includes(studentId)) {
           attendanceData.students.push(studentId);
         }
-      } else {
-        attendanceData.students = attendanceData.students.filter(id => id !== studentId);
       }
 
       await setDoc(docRef, attendanceData);
 
-      // Update state
       setData(prev => {
         const updatedAttendance = [...prev.attendance];
         const existingIndex = updatedAttendance.findIndex(
@@ -126,9 +151,45 @@ function App() {
     }
   };
 
-  
+  // Message sending functions
+  const sendPendingMessages = useCallback(async () => {
+    if (pendingMessages.length === 0 || !networkStatus) return;
 
-  // In your sendAbsenceMessages function:
+    setIsSending(true);
+    setMessage('Sending queued messages...');
+
+    const failedMessages = [];
+
+    for (const msg of pendingMessages) {
+      try {
+        const response = await axios.post(
+          "https://wasenderapi.com/api/send-message",
+          { to: msg.phone, text: msg.message },
+          {
+            headers: {
+              'Authorization': `Bearer ${WASENDER_API_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            timeout: 10000
+          }
+        );
+
+        if (!(response.data?.success || response.data?.message_id)) {
+          failedMessages.push(msg);
+        }
+      } catch (error) {
+        failedMessages.push(msg);
+      }
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    setPendingMessages(failedMessages);
+    localStorage.setItem('pendingMessages', JSON.stringify(failedMessages));
+
+    setMessage(`Sent ${pendingMessages.length - failedMessages.length} queued messages`);
+    setIsSending(false);
+  }, [pendingMessages, networkStatus]);
+
   const sendAbsenceMessages = async () => {
     const today = getToday();
     const absentStudents = getTodaysAttendance().filter(s => !s.present);
@@ -139,24 +200,21 @@ function App() {
     }
 
     setIsSending(true);
-    setMessage('Sending messages...');
+    setMessage(networkStatus ? 'Sending messages...' : 'Queueing messages (offline)');
 
-    try {
-      const WASENDER_API_KEY = "8cad52725d4bddf6fccff9574ba590b722ffc1d51e24b83e8041fc3a26acea69"; 
-      const API_URL = "https://wasenderapi.com/api/send-message"; // Official endpoint
-      let successfulSends = 0;
+    const newPendingMessages = [];
 
-      for (const student of absentStudents) {
-        const phone = student.phone.startsWith('+') ? student.phone : `+${student.phone}`;
-        const message = `Dear Parent,\n${student.name} was absent on ${today}.`;
+    for (const student of absentStudents) {
+      if (!student.phone) continue;
 
+      const phone = student.phone.startsWith('+') ? student.phone : `+${student.phone}`;
+      const message = `Dear Parent,\n${student.name} was absent on ${today}.`;
+
+      if (networkStatus) {
         try {
           const response = await axios.post(
-            API_URL,
-            {
-              to: phone,  // WASenderAPI uses "to" (not "recipient")
-              text: message // WASenderAPI uses "text" (not "message")
-            },
+            "https://wasenderapi.com/api/send-message",
+            { to: phone, text: message },
             {
               headers: {
                 'Authorization': `Bearer ${WASENDER_API_KEY}`,
@@ -166,45 +224,31 @@ function App() {
             }
           );
 
-          // Check their actual response structure
-          if (response.data?.success || response.data?.message_id) {
-            successfulSends++;
-          } else {
-            console.error('Unexpected response:', response.data);
+          if (!(response.data?.success || response.data?.message_id)) {
+            newPendingMessages.push({ phone, message });
           }
         } catch (error) {
-          console.error(`Failed for ${phone}:`, {
-            status: error.response?.status,
-            error: error.response?.data || error.message,
-            config: {
-              url: error.config?.url,
-              data: error.config?.data
-            }
-          });
+          newPendingMessages.push({ phone, message });
         }
-
-        await new Promise(resolve => setTimeout(resolve, 500)); // Rate limiting
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } else {
+        newPendingMessages.push({ phone, message });
       }
-
-      setMessage(`Sent ${successfulSends}/${absentStudents.length} messages`);
-    } catch (error) {
-      setMessage("Messaging service error");
-      console.error("System Error:", {
-        error: error.message,
-        stack: error.stack
-      });
-    } finally {
-      setIsSending(false);
     }
+
+    if (newPendingMessages.length > 0) {
+      const updatedPendingMessages = [...pendingMessages, ...newPendingMessages];
+      setPendingMessages(updatedPendingMessages);
+      localStorage.setItem('pendingMessages', JSON.stringify(updatedPendingMessages));
+    }
+
+    setMessage(networkStatus 
+      ? `Sent ${absentStudents.length - newPendingMessages.length}/${absentStudents.length} messages`
+      : `${newPendingMessages.length} messages queued for sending when online`
+    );
+    setIsSending(false);
   };
 
-  // Helper function for request signing (if required)
-  function createSignature(data, apiKey) {
-    return crypto.createHmac('sha256', apiKey)
-      .update(JSON.stringify(data))
-      .digest('hex');
-  }
-  
   // Management functions
   const addBatch = async () => {
     if (!newBatch.trim()) {
@@ -285,15 +329,15 @@ function App() {
   // History functions
   const getStudentAttendanceHistory = (studentId) => {
     return data.attendance
-      .filter(record => record.students.includes(studentId))
+      .filter(record => record.students && record.students.includes(studentId))
       .map(record => ({
         date: record.date,
         status: 'Absent',
         batch: data.batches.find(b => b.id === record.batchId)?.name || 'Unknown'
       }));
   };
-  
-// Tests functions
+
+  // Tests functions
   const sendTestMarks = async () => {
     if (!testData.testName || !testData.totalMarks) {
       setMessage('Please enter test name and total marks');
@@ -302,23 +346,21 @@ function App() {
 
     setIsSending(true);
     const students = getStudentsForBatch(selectedBatch);
-    setMessage(`Sending test results (0/${students.length})`); // Initialize counter
+    setMessage(`Sending test results (0/${students.length})`);
 
     try {
-      const WASENDER_API_KEY = "8cad52725d4bddf6fccff9574ba590b722ffc1d51e24b83e8041fc3a26acea69";
-      const API_URL = "https://wasenderapi.com/api/send-message";
       let successfulSends = 0;
 
       for (const student of students) {
         const marks = testData.marks[student.id];
-        if (!marks || !marks.obtained) continue;
+        if (!marks || !marks.obtained || !student.phone) continue;
 
         const phone = student.phone.startsWith('+') ? student.phone : `+${student.phone}`;
-        const message = `Dear Parent,\n${student.name} scored ${marks.obtained}/${marks.total} in ${testData.testName}.`;
+        const message = `Dear Parent,\n${student.name} scored ${marks.obtained}/${testData.totalMarks} in ${testData.testName}.`;
 
         try {
           const response = await axios.post(
-            API_URL,
+            "https://wasenderapi.com/api/send-message",
             { to: phone, text: message },
             {
               headers: {
@@ -331,21 +373,21 @@ function App() {
 
           if (response.data?.success || response.data?.message_id) {
             successfulSends++;
-            setMessage(`Sending test results (${successfulSends}/${students.length})`); // Live update
+            setMessage(`Sending test results (${successfulSends}/${students.length})`);
           }
         } catch (error) {
           console.error(`Failed for ${phone}:`, error);
         }
 
-        await new Promise(resolve => setTimeout(resolve, 60000)); // Keep rate limit
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
 
-      setMessage(`Sent ${successfulSends}/${students.length} test results`); // Final message
+      setMessage(`Sent ${successfulSends}/${students.length} test results`);
     } catch (error) {
       setMessage("Failed to send test results");
       console.error("Error:", error);
     } finally {
-      setIsSending(false); // This will now execute immediately
+      setIsSending(false);
     }
   };
 
@@ -453,7 +495,7 @@ function App() {
         />
         <input
           type="text"
-          placeholder="Phone number"
+          placeholder="Phone number (with country code)"
           value={newStudent.phone}
           onChange={e => setNewStudent({...newStudent, phone: e.target.value})}
         />
@@ -481,21 +523,24 @@ function App() {
             </tr>
           </thead>
           <tbody>
-            {data.students.map(student => (
-              <tr key={student.id}>
-                <td>{student.name}</td>
-                <td>{student.phone || 'N/A'}</td>
-                <td>{data.batches.find(b => b.id === student.batchId)?.name || 'Unknown'}</td>
-                <td>
-                  <button 
-                    onClick={() => deleteStudent(student.id)}
-                    className="delete-button"
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {data.students.map(student => {
+              const batch = data.batches.find(b => b.id === student.batchId);
+              return (
+                <tr key={student.id}>
+                  <td>{student.name}</td>
+                  <td>{student.phone || 'N/A'}</td>
+                  <td>{batch?.name || 'Unknown'}</td>
+                  <td>
+                    <button 
+                      onClick={() => deleteStudent(student.id)}
+                      className="delete-button"
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -673,75 +718,77 @@ function App() {
         <div className="actions">
           <button 
             onClick={sendTestMarks}
-            disabled={!testData.testName || !testData.totalMarks}
+            disabled={!testData.testName || !testData.totalMarks || isSending}
             className="send-button"
           >
-            Send Test Results
+            {isSending ? 'Sending...' : 'Send Test Results'}
           </button>
         </div>
       </div>
     );
   };
-  
 
-      return (
-        <div className="App">
-          <header className="App-header">
-            <img src="/logo.svg" alt="School Logo" className="logo" />
-            <h1>Attendance System</h1>
-          </header>
-        <main> 
+  return (
+    <div className="App">
+      <header className="App-header">
+        <img src="/logo.svg" alt="School Logo" className="logo" />
+        <h1>Attendance System</h1>
+      </header>
 
-      <div className="tabs">
-        <button
-          className={selectedTab === 'attendance' ? 'active' : ''}
-          onClick={() => setSelectedTab('attendance')}
-        >
-          Attendance
-        </button>
-        <button
-          className={selectedTab === 'management' ? 'active' : ''}
-          onClick={() => setSelectedTab('management')}
-        >
-          Management
-        </button>
-        <button
-          className={selectedTab === 'history' ? 'active' : ''}
-          onClick={() => setSelectedTab('history')}
-        >
-          History
-        </button>
-       
-         <button
-          className={selectedTab === 'tests' ? 'active' : ''}
-          onClick={() => setSelectedTab('tests')}
-        >
-          Tests
-        </button>
-       
-      </div>
+      <main>
+        <div className="tabs">
+          <button
+            className={selectedTab === 'attendance' ? 'active' : ''}
+            onClick={() => setSelectedTab('attendance')}
+          >
+            Attendance
+          </button>
+          <button
+            className={selectedTab === 'management' ? 'active' : ''}
+            onClick={() => setSelectedTab('management')}
+          >
+            Management
+          </button>
+          <button
+            className={selectedTab === 'history' ? 'active' : ''}
+            onClick={() => setSelectedTab('history')}
+          >
+            History
+          </button>
+          <button
+            className={selectedTab === 'tests' ? 'active' : ''}
+            onClick={() => setSelectedTab('tests')}
+          >
+            Tests
+          </button>
+        </div>
 
+        <div className="network-status">
+          {networkStatus ? (
+            <span style={{color: 'green'}}>● Online</span>
+          ) : (
+            <span style={{color: 'red'}}>● Offline - Messages will send when connected</span>
+          )}
+        </div>
 
-      {message && <div className="message">{message}</div>}
+        {message && <div className="message">{message}</div>}
 
-      
-      {selectedTab === 'attendance' ? (
-        !selectedBatch ? renderBatches() : renderAttendance()
-      ) : selectedTab === 'management' ? (
-        renderManagement()
-      ) : selectedTab === 'history' ? (
-        renderHistory()
-      ) : (
-        renderTests() // Add this for the tests tab
-      )}
-        </main>
+        {selectedTab === 'attendance' ? (
+          !selectedBatch ? renderBatches() : renderAttendance()
+        ) : selectedTab === 'management' ? (
+          renderManagement()
+        ) : selectedTab === 'history' ? (
+          renderHistory()
+        ) : (
+          renderTests()
+        )}
+      </main>
 
-          <footer className="app-footer">
-            <p>© {new Date().getFullYear()} - Developed by Misbahuddin Syed</p>
-            <p className="footer-contact">Contact: syedmisbahuddin2006@gmail.com</p>
-          </footer>
+      <footer className="app-footer">
+        <p>© {new Date().getFullYear()} - Developed by Misbahuddin Syed</p>
+        <p className="footer-contact">Contact: syedmisbahuddin2006@gmail.com</p>
+      </footer>
     </div>
-    
   );
 }
 
