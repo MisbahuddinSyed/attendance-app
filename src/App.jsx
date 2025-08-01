@@ -13,7 +13,18 @@ import {
 import { db } from './firebase';
 import axios from 'axios';
 
-const getToday = () => new Date().toISOString().split('T')[0];
+// Add this helper function at the top of your file
+const getCurrentLocalDate = () => {
+  return new Date().toLocaleDateString('en-IN', { 
+    timeZone: 'Asia/Kolkata' // Change to your timezone
+  });
+};
+const getToday = () => {
+  const now = new Date();
+  // For testing purposes only - remove this line in production
+  // now.setDate(now.getDate() + 1); // Uncomment to simulate next day
+  return now.toISOString().split('T')[0];
+};
 
 function App() {
   // State management
@@ -61,12 +72,22 @@ function App() {
     fetchData();
   }, []);
 
+  // Add this near your other useEffect hooks
+  useEffect(() => {
+    // Update date every minute (adjust interval as needed)
+    const interval = setInterval(() => {
+      setDate(getToday());
+    }, 60000); // 60,000ms = 1 minute
+
+    return () => clearInterval(interval);
+  }, []);
+
   // Helper functions
   const getStudentsForBatch = useCallback((batchId) => {
     return data.students.filter(s => s.batchId === batchId);
   }, [data.students]);
 
-  const getTodaysAttendance = useCallback(() => {
+  /*const getTodaysAttendance = useCallback(() => {
     if (!selectedBatch) return [];
     const today = getToday();
     const record = data.attendance.find(r => r.batchId === selectedBatch && r.date === today) || { students: [] };
@@ -78,10 +99,30 @@ function App() {
       ...s,
       present: studentIds.includes(s.id)
     }));
+  }, [selectedBatch, data.attendance, getStudentsForBatch]);*/
+
+  const getTodaysAttendance = useCallback(() => {
+    if (!selectedBatch) return [];
+    const today = getToday();
+
+    // Find the attendance record or create a default one
+    const record = data.attendance.find(r => r.batchId === selectedBatch && r.date === today);
+
+    // Get the student IDs, defaulting to empty array if not found
+    const studentIds = record?.students || [];
+
+    // Get all students in the batch
+    const batchStudents = getStudentsForBatch(selectedBatch);
+
+    // Return students with attendance status
+    return batchStudents.map(s => ({
+      ...s,
+      present: studentIds.includes(s.id)
+    }));
   }, [selectedBatch, data.attendance, getStudentsForBatch]);
 
   // Attendance functions
-  const toggleAttendance = async (studentId, isCurrentlyPresent) => {
+  /*const toggleAttendance = async (studentId, isCurrentlyPresent) => {
     try {
       const today = getToday();
       const docRef = doc(db, 'attendance', `${selectedBatch}_${today}`);
@@ -93,6 +134,54 @@ function App() {
         students: docSnap.exists() ? [...docSnap.data().students] : []
       };
 
+      if (isCurrentlyPresent) {
+        attendanceData.students = attendanceData.students.filter(id => id !== studentId);
+      } else {
+        if (!attendanceData.students.includes(studentId)) {
+          attendanceData.students.push(studentId);
+        }
+      }
+
+      await setDoc(docRef, attendanceData);
+
+      setData(prev => ({
+        ...prev,
+        attendance: prev.attendance.filter(r => !(r.batchId === selectedBatch && r.date === today))
+          .concat(attendanceData)
+      }));
+
+      setMessage(`Student marked ${isCurrentlyPresent ? 'absent' : 'present'}`);
+    } catch (error) {
+      console.error("Error updating attendance:", error);
+      setMessage(`Failed to update: ${error.message}`);
+    }
+  };*/
+
+  const toggleAttendance = async (studentId, isCurrentlyPresent) => {
+    try {
+      const today = getToday();
+      setDate(today); // Update the state with today's date
+      const docRef = doc(db, 'attendance', `${selectedBatch}_${today}`);
+      const docSnap = await getDoc(docRef);
+
+      // Initialize with empty students array (SAFETY CHECK #1)
+      let attendanceData = {
+        batchId: selectedBatch,
+        date: today,
+        students: [] // Always starts as array
+      };
+
+      // If document exists, safely copy its data (SAFETY CHECK #2)
+      if (docSnap.exists()) {
+        attendanceData.students = [...(docSnap.data().students || [])];
+      }
+
+      // Final array validation (SAFETY CHECK #3)
+      if (!Array.isArray(attendanceData.students)) {
+        attendanceData.students = [];
+      }
+
+      // Your existing toggle logic remains unchanged below
       if (isCurrentlyPresent) {
         attendanceData.students = attendanceData.students.filter(id => id !== studentId);
       } else {
@@ -135,7 +224,7 @@ function App() {
       for (const student of absentStudents) {
         try {
           const phone = student.phone.startsWith('+') ? student.phone : `+${student.phone}`;
-          const message = `Dear Parent,\n${student.name} was absent on ${today}.`;
+          const message = `Dear Parent,\n${student.name} was absent on ${getCurrentLocalDate()}.`;
 
           const response = await axios.post(
             "https://wasenderapi.com/api/send-message",
@@ -337,7 +426,9 @@ function App() {
         <button onClick={() => setSelectedBatch(null)} className="back-button">
           ← Back to Batches
         </button>
-        <h2>{batch?.name} Attendance — {date}</h2>
+        
+        <h2>{batch?.name} Attendance — {getCurrentLocalDate()}</h2>
+
 
         <div className="attendance-list">
           <table>
