@@ -1,795 +1,208 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import './App.css';
+// App.jsx
+import React, { useEffect, useState } from "react";
+import { db } from "./firebase";
 import {
   collection,
   addDoc,
   getDocs,
   deleteDoc,
   doc,
-  getDoc,
   setDoc,
-  Timestamp
-} from 'firebase/firestore';
-import { db } from './firebase';
-import axios from 'axios';
-
-const getToday = () => new Date().toISOString().split('T')[0];
+  query,
+  where,
+} from "firebase/firestore";
+import axios from "axios";
 
 function App() {
-  // State management
-  const [selectedStudent, setSelectedStudent] = useState(null);
-  const [data, setData] = useState({ batches: [], students: [], attendance: [] });
-  const [selectedBatch, setSelectedBatch] = useState(null);
-  const [selectedTab, setSelectedTab] = useState('attendance');
-  const [date, setDate] = useState(getToday());
-  const [message, setMessage] = useState('');
-  const [newBatch, setNewBatch] = useState('');
-  const [newStudent, setNewStudent] = useState({ name: '', phone: '', batchId: '' });
-  const [isSending, setIsSending] = useState(false);
-  const [networkStatus, setNetworkStatus] = useState(navigator.onLine);
-  const [pendingMessages, setPendingMessages] = useState([]);
-  const [testData, setTestData] = useState({
-    testName: '',
-    totalMarks: '',
-    marks: {}
-  });
+  const [batches, setBatches] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [selectedBatch, setSelectedBatch] = useState("");
+  const [studentName, setStudentName] = useState("");
+  const [studentPhone, setStudentPhone] = useState("");
+  const [view, setView] = useState("attendance");
+  const [attendanceDate, setAttendanceDate] = useState(() =>
+    new Date().toISOString().split("T")[0]
+  );
+  const [markedAbsent, setMarkedAbsent] = useState({});
+  const [history, setHistory] = useState([]);
+  const API_KEY =
+    "8cad52725d4bddf6fccff9574ba590b722ffc1d51e24b83e8041fc3a26acea69";
+  const SEND_URL = "https://wasenderapi.com/api/send-message";
 
-  const WASENDER_API_KEY = "8cad52725d4bddf6fccff9574ba590b722ffc1d51e24b83e8041fc3a26acea69";
-
-  // Load pending messages from localStorage
   useEffect(() => {
-    const storedMessages = localStorage.getItem('pendingMessages');
-    if (storedMessages) {
-      setPendingMessages(JSON.parse(storedMessages));
+    fetchBatches();
+  }, []);
+
+  useEffect(() => {
+    if (selectedBatch) {
+      fetchStudents(selectedBatch);
+    } else {
+      setStudents([]);
     }
-  }, []);
+  }, [selectedBatch]);
 
-  // Network status listener
-  useEffect(() => {
-    const handleOnline = () => {
-      setNetworkStatus(true);
-      sendPendingMessages();
-    };
-    const handleOffline = () => setNetworkStatus(false);
+  const fetchBatches = async () => {
+    const querySnapshot = await getDocs(collection(db, "batches"));
+    const data = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    setBatches(data);
+  };
 
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
+  const fetchStudents = async (batchId) => {
+    const q = query(collection(db, "students"), where("batchId", "==", batchId));
+    const querySnapshot = await getDocs(q);
+    const data = querySnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    setStudents(data);
+    const initialAbsent = {};
+    data.forEach((student) => (initialAbsent[student.id] = false));
+    setMarkedAbsent(initialAbsent);
+  };
 
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
+  const handleAddStudent = async () => {
+    if (!selectedBatch || !studentName || !studentPhone) return;
+    await addDoc(collection(db, "students"), {
+      name: studentName,
+      phone: studentPhone,
+      batchId: selectedBatch,
+    });
+    setStudentName("");
+    setStudentPhone("");
+    fetchStudents(selectedBatch);
+  };
 
-  // Load initial data
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [batchesSnapshot, studentsSnapshot, attendanceSnapshot] = await Promise.all([
-          getDocs(collection(db, 'batches')),
-          getDocs(collection(db, 'students')),
-          getDocs(collection(db, 'attendance'))
-        ]);
+  const handleDeleteStudent = async (id) => {
+    await deleteDoc(doc(db, "students", id));
+    fetchStudents(selectedBatch);
+  };
 
-        setData({
-          batches: batchesSnapshot.docs.map(d => ({ id: d.id, ...d.data() })),
-          students: studentsSnapshot.docs.map(d => ({ id: d.id, ...d.data() })),
-          attendance: attendanceSnapshot.docs.map(d => ({ id: d.id, ...d.data() }))
-        });
-      } catch (error) {
-        console.error("Error loading data:", error);
-        setMessage("Failed to load data. Please refresh.");
-      }
-    };
-
-    fetchData();
-  }, []);
-
-  // Helper functions
-  const getStudentsForBatch = useCallback((batchId) => {
-    return data.students.filter(s => s.batchId === batchId);
-  }, [data.students]);
-
-  const getTodaysAttendance = useCallback(() => {
-    if (!selectedBatch) return [];
-    const today = getToday();
-    const record = data.attendance.find(r => r.batchId === selectedBatch && r.date === today) || { students: [] };
-    return getStudentsForBatch(selectedBatch).map(s => ({
-      ...s,
-      present: record.students.includes(s.id)
-    }));
-  }, [selectedBatch, data.attendance, getStudentsForBatch]);
-
-  // Attendance functions
-  const toggleAttendance = async (studentId, isCurrentlyPresent) => {
-    try {
-      const today = getToday();
-      const docRef = doc(db, 'attendance', `${selectedBatch}_${today}`);
-      const docSnap = await getDoc(docRef);
-      const student = data.students.find(s => s.id === studentId);
-
-      if (!student) throw new Error("Student not found");
-
-      let attendanceData = {
+  const handleMarkAttendance = async () => {
+    const today = attendanceDate;
+    for (const student of students) {
+      const status = markedAbsent[student.id] ? "absent" : "present";
+      await setDoc(doc(db, "attendance", `${student.id}_${today}`), {
+        studentId: student.id,
+        studentName: student.name,
         batchId: selectedBatch,
+        batchName: batches.find((b) => b.id === selectedBatch)?.name || "",
         date: today,
-        students: docSnap.exists() ? [...docSnap.data().students] : []
-      };
-
-      if (isCurrentlyPresent) {
-        attendanceData.students = attendanceData.students.filter(id => id !== studentId);
-      } else {
-        if (!attendanceData.students.includes(studentId)) {
-          attendanceData.students.push(studentId);
-        }
-      }
-
-      await setDoc(docRef, attendanceData);
-
-      setData(prev => {
-        const updatedAttendance = [...prev.attendance];
-        const existingIndex = updatedAttendance.findIndex(
-          item => item.batchId === selectedBatch && item.date === today
-        );
-
-        if (existingIndex >= 0) {
-          updatedAttendance[existingIndex] = attendanceData;
-        } else {
-          updatedAttendance.push(attendanceData);
-        }
-
-        return {
-          ...prev,
-          attendance: updatedAttendance
-        };
+        status,
       });
 
-      setMessage(`Student marked ${isCurrentlyPresent ? 'absent' : 'present'}`);
-    } catch (error) {
-      console.error("Error updating attendance:", error);
-      setMessage(`Failed to update attendance: ${error.message}`);
-    }
-  };
-
-  // Message sending functions
-  const sendPendingMessages = useCallback(async () => {
-    if (pendingMessages.length === 0 || !networkStatus) return;
-
-    setIsSending(true);
-    setMessage('Sending queued messages...');
-
-    const failedMessages = [];
-
-    for (const msg of pendingMessages) {
-      try {
-        const response = await axios.post(
-          "https://wasenderapi.com/api/send-message",
-          { to: msg.phone, text: msg.message },
-          {
-            headers: {
-              'Authorization': `Bearer ${WASENDER_API_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            timeout: 10000
-          }
-        );
-
-        if (!(response.data?.success || response.data?.message_id)) {
-          failedMessages.push(msg);
-        }
-      } catch (error) {
-        failedMessages.push(msg);
-      }
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-
-    setPendingMessages(failedMessages);
-    localStorage.setItem('pendingMessages', JSON.stringify(failedMessages));
-
-    setMessage(`Sent ${pendingMessages.length - failedMessages.length} queued messages`);
-    setIsSending(false);
-  }, [pendingMessages, networkStatus]);
-
-  const sendAbsenceMessages = async () => {
-    const today = getToday();
-    const absentStudents = getTodaysAttendance().filter(s => !s.present);
-
-    if (absentStudents.length === 0) {
-      setMessage('No absent students today!');
-      return;
-    }
-
-    setIsSending(true);
-    setMessage(networkStatus ? 'Sending messages...' : 'Queueing messages (offline)');
-
-    const newPendingMessages = [];
-
-    for (const student of absentStudents) {
-      if (!student.phone) continue;
-
-      const phone = student.phone.startsWith('+') ? student.phone : `+${student.phone}`;
-      const message = `Dear Parent,\n${student.name} was absent on ${today}.`;
-
-      if (networkStatus) {
-        try {
-          const response = await axios.post(
-            "https://wasenderapi.com/api/send-message",
-            { to: phone, text: message },
-            {
-              headers: {
-                'Authorization': `Bearer ${WASENDER_API_KEY}`,
-                'Content-Type': 'application/json'
-              },
-              timeout: 10000
-            }
-          );
-
-          if (!(response.data?.success || response.data?.message_id)) {
-            newPendingMessages.push({ phone, message });
-          }
-        } catch (error) {
-          newPendingMessages.push({ phone, message });
-        }
-        await new Promise(resolve => setTimeout(resolve, 500));
-      } else {
-        newPendingMessages.push({ phone, message });
+      if (status === "absent") {
+        await axios.post(SEND_URL, {
+          api_key: API_KEY,
+          message: `Your child ${student.name} was absent on ${today}.`,
+          number: student.phone,
+        });
       }
     }
-
-    if (newPendingMessages.length > 0) {
-      const updatedPendingMessages = [...pendingMessages, ...newPendingMessages];
-      setPendingMessages(updatedPendingMessages);
-      localStorage.setItem('pendingMessages', JSON.stringify(updatedPendingMessages));
-    }
-
-    setMessage(networkStatus 
-      ? `Sent ${absentStudents.length - newPendingMessages.length}/${absentStudents.length} messages`
-      : `${newPendingMessages.length} messages queued for sending when online`
-    );
-    setIsSending(false);
+    alert("Attendance submitted and messages sent!");
   };
 
-  // Management functions
-  const addBatch = async () => {
-    if (!newBatch.trim()) {
-      setMessage("Batch name cannot be empty");
-      return;
-    }
-
-    try {
-      const docRef = await addDoc(collection(db, 'batches'), {
-        name: newBatch.trim(),
-        createdAt: Timestamp.now()
-      });
-
-      setData(prev => ({
-        ...prev,
-        batches: [...prev.batches, { id: docRef.id, name: newBatch.trim() }]
-      }));
-      setNewBatch('');
-      setMessage(`Batch "${newBatch}" added successfully`);
-    } catch (error) {
-      console.error("Error adding batch:", error);
-      setMessage("Failed to add batch");
-    }
+  const fetchAttendanceHistory = async () => {
+    const querySnapshot = await getDocs(collection(db, "attendance"));
+    const data = querySnapshot.docs.map((doc) => doc.data());
+    setHistory(data);
   };
 
-  const addStudent = async () => {
-    if (!newStudent.name.trim() || !newStudent.batchId) {
-      setMessage("Name and batch are required");
-      return;
-    }
-
-    if (newStudent.phone && !/^\+?\d{10,15}$/.test(newStudent.phone.trim())) {
-      setMessage("Please enter a valid phone number");
-      return;
-    }
-
-    try {
-      const docRef = await addDoc(collection(db, 'students'), {
-        name: newStudent.name.trim(),
-        phone: newStudent.phone.trim(),
-        batchId: newStudent.batchId,
-        createdAt: Timestamp.now()
-      });
-
-      setData(prev => ({
-        ...prev,
-        students: [...prev.students, { 
-          id: docRef.id, 
-          name: newStudent.name.trim(),
-          phone: newStudent.phone.trim(),
-          batchId: newStudent.batchId
-        }]
-      }));
-      setNewStudent({ name: '', phone: '', batchId: '' });
-      setMessage(`Student "${newStudent.name}" added successfully`);
-    } catch (error) {
-      console.error("Error adding student:", error);
-      setMessage(`Failed to add student: ${error.message}`);
-    }
-  };
-
-  const deleteStudent = async (studentId) => {
-    if (!window.confirm('Are you sure you want to delete this student?')) return;
-
-    try {
-      await deleteDoc(doc(db, 'students', studentId));
-      setData(prev => ({
-        ...prev,
-        students: prev.students.filter(s => s.id !== studentId)
-      }));
-      setMessage('Student deleted successfully');
-    } catch (error) {
-      console.error("Error deleting student:", error);
-      setMessage("Failed to delete student");
-    }
-  };
-
-  // History functions
-  const getStudentAttendanceHistory = (studentId) => {
-    return data.attendance
-      .filter(record => record.students && record.students.includes(studentId))
-      .map(record => ({
-        date: record.date,
-        status: 'Absent',
-        batch: data.batches.find(b => b.id === record.batchId)?.name || 'Unknown'
-      }));
-  };
-
-  // Tests functions
-  const sendTestMarks = async () => {
-    if (!testData.testName || !testData.totalMarks) {
-      setMessage('Please enter test name and total marks');
-      return;
-    }
-
-    setIsSending(true);
-    const students = getStudentsForBatch(selectedBatch);
-    setMessage(`Sending test results (0/${students.length})`);
-
-    try {
-      let successfulSends = 0;
-
-      for (const student of students) {
-        const marks = testData.marks[student.id];
-        if (!marks || !marks.obtained || !student.phone) continue;
-
-        const phone = student.phone.startsWith('+') ? student.phone : `+${student.phone}`;
-        const message = `Dear Parent,\n${student.name} scored ${marks.obtained}/${testData.totalMarks} in ${testData.testName}.`;
-
-        try {
-          const response = await axios.post(
-            "https://wasenderapi.com/api/send-message",
-            { to: phone, text: message },
-            {
-              headers: {
-                'Authorization': `Bearer ${WASENDER_API_KEY}`,
-                'Content-Type': 'application/json'
-              },
-              timeout: 10000
-            }
-          );
-
-          if (response.data?.success || response.data?.message_id) {
-            successfulSends++;
-            setMessage(`Sending test results (${successfulSends}/${students.length})`);
-          }
-        } catch (error) {
-          console.error(`Failed for ${phone}:`, error);
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-
-      setMessage(`Sent ${successfulSends}/${students.length} test results`);
-    } catch (error) {
-      setMessage("Failed to send test results");
-      console.error("Error:", error);
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  // Render functions
-  const renderBatches = () => (
-    <div className="batches-list">
-      <h2>Select Batch</h2>
-      {data.batches.length === 0 ? (
-        <p>No batches available</p>
-      ) : (
-        <ul>
-          {data.batches.map(batch => (
-            <li key={batch.id}>
-              <button 
-                onClick={() => setSelectedBatch(batch.id)} 
-                className="batch-button"
-              >
-                {batch.name}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+  const renderAttendance = () => (
+    <div>
+      <h2>Mark Attendance</h2>
+      <input
+        type="date"
+        value={attendanceDate}
+        onChange={(e) => setAttendanceDate(e.target.value)}
+      />
+      <select onChange={(e) => setSelectedBatch(e.target.value)} value={selectedBatch}>
+        <option value="">Select Batch</option>
+        {batches.map((batch) => (
+          <option key={batch.id} value={batch.id}>
+            {batch.name}
+          </option>
+        ))}
+      </select>
+      {students.map((student) => (
+        <div key={student.id}>
+          <label>
+            <input
+              type="checkbox"
+              checked={markedAbsent[student.id] || false}
+              onChange={(e) =>
+                setMarkedAbsent({
+                  ...markedAbsent,
+                  [student.id]: e.target.checked,
+                })
+              }
+            />
+            {student.name} ({student.phone})
+          </label>
+        </div>
+      ))}
+      <button onClick={handleMarkAttendance}>Submit Attendance</button>
     </div>
   );
 
-  const renderAttendance = () => {
-    const batch = data.batches.find(b => b.id === selectedBatch);
-    const todaysAttendance = getTodaysAttendance();
-    const absentCount = todaysAttendance.filter(s => !s.present).length;
-
-    return (
-      <div className="attendance-section">
-        <button 
-          onClick={() => setSelectedBatch(null)} 
-          className="back-button"
-        >
-          ← Back to Batches
-        </button>
-        <h2>{batch?.name} Attendance — {date}</h2>
-
-        <div className="attendance-list">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Phone</th>
-                <th>Status</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {todaysAttendance.map(student => (
-                <tr key={student.id}>
-                  <td>{student.name}</td>
-                  <td>{student.phone || 'N/A'}</td>
-                  <td>{student.present ? 'Present ✅' : 'Absent ❌'}</td>
-                  <td>
-                    <button 
-                      onClick={() => toggleAttendance(student.id, student.present)}
-                      className={student.present ? 'mark-absent' : 'mark-present'}
-                    >
-                      {student.present ? 'Mark Absent' : 'Mark Present'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="actions">
-          <button 
-            onClick={sendAbsenceMessages} 
-            disabled={isSending || absentCount === 0}
-            className="send-button"
-          >
-            {isSending ? 'Sending...' : `Send Notifications (${absentCount})`}
-          </button>
-        </div>
-      </div>
-    );
-  };
-
-  const renderManagement = () => (
-    <div className="management-section">
-      <h2>Batch Management</h2>
-      <div className="add-batch">
-        <input
-          type="text"
-          placeholder="New batch name"
-          value={newBatch}
-          onChange={e => setNewBatch(e.target.value)}
-        />
-        <button onClick={addBatch}>Add Batch</button>
-      </div>
-
-      <h2>Student Management</h2>
-      <div className="add-student">
-        <input
-          type="text"
-          placeholder="Student name"
-          value={newStudent.name}
-          onChange={e => setNewStudent({...newStudent, name: e.target.value})}
-        />
-        <input
-          type="text"
-          placeholder="Phone number (with country code)"
-          value={newStudent.phone}
-          onChange={e => setNewStudent({...newStudent, phone: e.target.value})}
-        />
-        <select
-          value={newStudent.batchId}
-          onChange={e => setNewStudent({...newStudent, batchId: e.target.value})}
-        >
-          <option value="">Select Batch</option>
-          {data.batches.map(batch => (
-            <option key={batch.id} value={batch.id}>{batch.name}</option>
-          ))}
-        </select>
-        <button onClick={addStudent}>Add Student</button>
-      </div>
-
-      <h2>Current Students</h2>
-      <div className="student-list">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Phone</th>
-              <th>Batch</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.students.map(student => {
-              const batch = data.batches.find(b => b.id === student.batchId);
-              return (
-                <tr key={student.id}>
-                  <td>{student.name}</td>
-                  <td>{student.phone || 'N/A'}</td>
-                  <td>{batch?.name || 'Unknown'}</td>
-                  <td>
-                    <button 
-                      onClick={() => deleteStudent(student.id)}
-                      className="delete-button"
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+  const renderHistory = () => (
+    <div>
+      <h2>Attendance History</h2>
+      <button onClick={fetchAttendanceHistory}>Refresh</button>
+      <ul>
+        {history.map((entry, idx) => (
+          <li key={idx}>
+            {entry.date} - {entry.studentName} - {entry.status}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 
-  const renderHistory = () => {
-    if (!selectedStudent) {
-      return (
-        <div className="history-section">
-          <h2>Select a Student to View History</h2>
-          <table className="student-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Batch</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.students.map(student => {
-                const batch = data.batches.find(b => b.id === student.batchId);
-                return (
-                  <tr key={student.id}>
-                    <td>{student.name}</td>
-                    <td>{batch?.name || 'Unknown'}</td>
-                    <td>
-                      <button 
-                        onClick={() => setSelectedStudent(student.id)}
-                        className="view-button"
-                      >
-                        View History
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+  const renderAddStudent = () => (
+    <div>
+      <h2>Add Student</h2>
+      <select onChange={(e) => setSelectedBatch(e.target.value)} value={selectedBatch}>
+        <option value="">Select Batch</option>
+        {batches.map((batch) => (
+          <option key={batch.id} value={batch.id}>
+            {batch.name}
+          </option>
+        ))}
+      </select>
+      <input
+        type="text"
+        placeholder="Student Name"
+        value={studentName}
+        onChange={(e) => setStudentName(e.target.value)}
+      />
+      <input
+        type="text"
+        placeholder="Parent's Phone (10 digit)"
+        value={studentPhone}
+        onChange={(e) => setStudentPhone(e.target.value)}
+      />
+      <button onClick={handleAddStudent}>Add Student</button>
+      <h3>Delete Student</h3>
+      {students.map((student) => (
+        <div key={student.id}>
+          {student.name} ({student.phone})
+          <button onClick={() => handleDeleteStudent(student.id)}>Delete</button>
         </div>
-      ); 
-    }
-
-    const student = data.students.find(s => s.id === selectedStudent);
-    const history = getStudentAttendanceHistory(selectedStudent);
-    const batch = data.batches.find(b => b.id === student.batchId);
-
-    return (
-      <div className="history-section">
-        <button 
-          onClick={() => setSelectedStudent(null)}
-          className="back-button"
-        >
-          ← Back to All Students
-        </button>
-        <h2>Attendance History for {student.name} ({batch?.name || 'Unknown'})</h2>
-
-        {history.length === 0 ? (
-          <p>No absence records found.</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Status</th>
-                <th>Batch</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((record, index) => (
-                <tr key={index}>
-                  <td>{record.date}</td>
-                  <td className="absent">Absent</td>
-                  <td>{record.batch}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    );
-  };
-
-  const renderTests = () => {
-    if (!selectedBatch) {
-      return (
-        <div className="batches-list">
-          <h2>Select Batch to Enter Test Marks</h2>
-          {data.batches.length === 0 ? (
-            <p>No batches available</p>
-          ) : (
-            <ul>
-              {data.batches.map(batch => (
-                <li key={batch.id}>
-                  <button 
-                    onClick={() => setSelectedBatch(batch.id)} 
-                    className="batch-button"
-                  >
-                    {batch.name}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      );
-    }
-
-    const batch = data.batches.find(b => b.id === selectedBatch);
-    const students = getStudentsForBatch(selectedBatch);
-
-    return (
-      <div className="tests-section">
-        <button 
-          onClick={() => setSelectedBatch(null)} 
-          className="back-button"
-        >
-          ← Back to Batches
-        </button>
-
-        <h2>{batch?.name} - Test Marks</h2>
-
-        <div className="test-info">
-          <input
-            type="text"
-            placeholder="Test Name (e.g., Mid-Term Maths)"
-            value={testData.testName}
-            onChange={(e) => setTestData({...testData, testName: e.target.value})}
-          />
-          <input
-            type="number"
-            placeholder="Total Marks"
-            value={testData.totalMarks}
-            onChange={(e) => setTestData({...testData, totalMarks: e.target.value})}
-          />
-        </div>
-
-        <div className="marks-table">
-          <table>
-            <thead>
-              <tr>
-                <th>Student Name</th>
-                <th>Marks Obtained</th>
-                <th>Out Of</th>
-              </tr>
-            </thead>
-            <tbody>
-              {students.map(student => (
-                <tr key={student.id}>
-                  <td>{student.name}</td>
-                  <td>
-                    <input
-                      type="number"
-                      value={testData.marks[student.id]?.obtained || ''}
-                      onChange={(e) => setTestData({
-                        ...testData,
-                        marks: {
-                          ...testData.marks,
-                          [student.id]: {
-                            ...testData.marks[student.id],
-                            obtained: e.target.value,
-                            total: testData.totalMarks
-                          }
-                        }
-                      })}
-                    />
-                  </td>
-                  <td>{testData.totalMarks}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="actions">
-          <button 
-            onClick={sendTestMarks}
-            disabled={!testData.testName || !testData.totalMarks || isSending}
-            className="send-button"
-          >
-            {isSending ? 'Sending...' : 'Send Test Results'}
-          </button>
-        </div>
-      </div>
-    );
-  };
+      ))}
+    </div>
+  );
 
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src="/logo.svg" alt="School Logo" className="logo" />
-        <h1>Attendance System</h1>
-      </header>
-
-      <main>
-        <div className="tabs">
-          <button
-            className={selectedTab === 'attendance' ? 'active' : ''}
-            onClick={() => setSelectedTab('attendance')}
-          >
-            Attendance
-          </button>
-          <button
-            className={selectedTab === 'management' ? 'active' : ''}
-            onClick={() => setSelectedTab('management')}
-          >
-            Management
-          </button>
-          <button
-            className={selectedTab === 'history' ? 'active' : ''}
-            onClick={() => setSelectedTab('history')}
-          >
-            History
-          </button>
-          <button
-            className={selectedTab === 'tests' ? 'active' : ''}
-            onClick={() => setSelectedTab('tests')}
-          >
-            Tests
-          </button>
-        </div>
-
-        <div className="network-status">
-          {networkStatus ? (
-            <span style={{color: 'green'}}>● Online</span>
-          ) : (
-            <span style={{color: 'red'}}>● Offline - Messages will send when connected</span>
-          )}
-        </div>
-
-        {message && <div className="message">{message}</div>}
-
-        {selectedTab === 'attendance' ? (
-          !selectedBatch ? renderBatches() : renderAttendance()
-        ) : selectedTab === 'management' ? (
-          renderManagement()
-        ) : selectedTab === 'history' ? (
-          renderHistory()
-        ) : (
-          renderTests()
-        )}
-      </main>
-
-      <footer className="app-footer">
-        <p>© {new Date().getFullYear()} - Developed by Misbahuddin Syed</p>
-        <p className="footer-contact">Contact: syedmisbahuddin2006@gmail.com</p>
-      </footer>
+    <div style={{ padding: 20 }}>
+      <h1>Attendance App</h1>
+      <div>
+        <button onClick={() => setView("attendance")}>Attendance</button>
+        <button onClick={() => setView("history")}>View History</button>
+        <button onClick={() => setView("add")}>Add/Delete Student</button>
+      </div>
+      {view === "attendance" && renderAttendance()}
+      {view === "history" && renderHistory()}
+      {view === "add" && renderAddStudent()}
     </div>
   );
 }
 
 export default App;
+
