@@ -44,7 +44,7 @@ function App() {
   });
   const [initialized, setInitialized] = useState(false);
 
-  const WASENDER_API_KEY = "8cad52725d4bddf6fccff9574ba590b722ffc1d51e24b83e8041fc3a26acea69";
+  const WASENDER_API_KEY = "867d8d4834e573e0445a1b52f4d3907746ca314f3eb61e0d38ed040700513d5b";
 
   // Data loading
   useEffect(() => {
