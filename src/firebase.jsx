@@ -1,19 +1,20 @@
-// src/firebase.jsx
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
+import { getAuth } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCo_WBa8mOprVVRC9mZt6QpSARmoYCV9FM",
-  authDomain: "attendanceapp-70057.firebaseapp.com",
-  databaseURL: "https://attendanceapp-70057-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "attendanceapp-70057",
-  storageBucket: "attendanceapp-70057.appspot.com",
-  messagingSenderId: "581083951126",
-  appId: "1:581083951126:web:50b5b3de92ddd8ffd48537",
-  measurementId: "G-7T1GFJDX5B"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const auth = getAuth(app);
 
-export { db };
+export { db, auth };

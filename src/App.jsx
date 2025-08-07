@@ -12,12 +12,26 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import axios from 'axios';
+import { CLIENT_CONFIG } from './config';
+import { getAuth, signInAnonymously } from "firebase/auth";
+
+console.log("Firebase config loaded:", {
+  apiKey: !!import.meta.env.VITE_FIREBASE_API_KEY,
+  wasender: !!import.meta.env.VITE_WASENDER_API_KEY
+});
 
 // Add this helper function at the top of your file
 const getCurrentLocalDate = () => {
   return new Date().toLocaleDateString('en-IN', { 
-    timeZone: 'Asia/Kolkata' // Change to your timezone
+    timeZone: 'Asia/Kolkata', // Change to your timezone
+    weekday: 'long',          // Add full day name (e.g., "Monday")
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
   });
+};
+const getClientCollections = () => {
+  return CLIENT_CONFIG.clients[CLIENT_CONFIG.currentClient].collections;
 };
 const getToday = () => {
   const now = new Date();
@@ -44,32 +58,63 @@ function App() {
   });
   const [initialized, setInitialized] = useState(false);
 
-  const WASENDER_API_KEY = "867d8d4834e573e0445a1b52f4d3907746ca314f3eb61e0d38ed040700513d5b";
+  
 
+  // Data loading
   // Data loading
   useEffect(() => {
     const fetchData = async () => {
+      console.group("Firestore Data Loading");
       try {
+        const collections = getClientCollections();
+        console.log("Loading data from:", collections);
+
         const [batchesSnapshot, studentsSnapshot, attendanceSnapshot] = await Promise.all([
-          getDocs(collection(db, 'batches')),
-          getDocs(collection(db, 'students')),
-          getDocs(collection(db, 'attendance'))
+          getDocs(collection(db, collections.batches)),
+          getDocs(collection(db, collections.students)),
+          getDocs(collection(db, collections.attendance))
         ]);
+
+        console.log("Loaded documents:", {
+          batches: batchesSnapshot.size,
+          students: studentsSnapshot.size,
+          attendance: attendanceSnapshot.size
+        });
 
         setData({
           batches: batchesSnapshot.docs.map(d => ({ id: d.id, ...d.data() })),
           students: studentsSnapshot.docs.map(d => ({ id: d.id, ...d.data() })),
           attendance: attendanceSnapshot.docs.map(d => ({ id: d.id, ...d.data() }))
         });
+
       } catch (error) {
-        console.error("Error loading data:", error);
-        setMessage("Error loading data. Please refresh.");
+        console.error("Load error:", {
+          message: error.message,
+          code: error.code,
+          stack: error.stack
+        });
+        setMessage(`Error: ${error.message}`);
       } finally {
         setInitialized(true);
+        console.groupEnd();
       }
     };
 
-    fetchData();
+    // Initialize auth
+    const auth = getAuth();
+
+    // Handle auth state
+    const unsubscribe = auth.onAuthStateChanged(user => {
+      if (user) {
+        console.log("User authenticated:", user.uid);
+        fetchData();
+      } else {
+        console.log("No user, signing in anonymously");
+        signInAnonymously(auth).catch(e => console.error("Anonymous sign-in failed:", e));
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
   // Add this near your other useEffect hooks
@@ -81,6 +126,32 @@ function App() {
 
     return () => clearInterval(interval);
   }, []);
+
+  // Auto mark present on refresh
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      // Save a flag in localStorage that we're refreshing
+      localStorage.setItem('autoPresentOnRefresh', 'true');
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (initialized && selectedBatch) {
+      const shouldAutoPresent = localStorage.getItem('autoPresentOnRefresh') === 'true';
+
+      if (shouldAutoPresent) {
+        markAllPresent();
+        // Clear the flag so we don't do it again unless another refresh happens
+        localStorage.removeItem('autoPresentOnRefresh');
+      }
+    }
+  }, [initialized, selectedBatch]);
 
   // Helper functions
   const getStudentsForBatch = useCallback((batchId) => {
@@ -120,6 +191,42 @@ function App() {
       present: studentIds.includes(s.id)
     }));
   }, [selectedBatch, data.attendance, getStudentsForBatch]);
+
+  const markAllPresent = async () => {
+    if (!selectedBatch) return;
+
+    try {
+      const today = getToday();
+      const docRef = doc(db, getClientCollections().attendance, `${selectedBatch}_${today}`);
+      const studentsInBatch = getStudentsForBatch(selectedBatch);
+
+      // Get all student IDs in the batch
+      const allStudentIds = studentsInBatch.map(student => student.id);
+
+      // Create/update attendance record with all students marked present
+      await setDoc(docRef, {
+        batchId: selectedBatch,
+        date: today,
+        students: allStudentIds
+      });
+
+      // Update local state
+      setData(prev => ({
+        ...prev,
+        attendance: prev.attendance.filter(r => !(r.batchId === selectedBatch && r.date === today))
+          .concat({
+            batchId: selectedBatch,
+            date: today,
+            students: allStudentIds
+          })
+      }));
+
+      setMessage('All students marked as present for today');
+    } catch (error) {
+      console.error("Error marking all present:", error);
+      setMessage('Failed to mark all present');
+    }
+  };
 
   // Attendance functions
   /*const toggleAttendance = async (studentId, isCurrentlyPresent) => {
@@ -161,7 +268,7 @@ function App() {
     try {
       const today = getToday();
       setDate(today); // Update the state with today's date
-      const docRef = doc(db, 'attendance', `${selectedBatch}_${today}`);
+      const docRef = doc(db, getClientCollections().attendance, `${selectedBatch}_${today}`);
       const docSnap = await getDoc(docRef);
 
       // Initialize with empty students array (SAFETY CHECK #1)
@@ -220,31 +327,45 @@ function App() {
 
     try {
       let successfulSends = 0;
+      const BATCH_SIZE = 5; // Send 5 messages at a time
+      const DELAY_BETWEEN_BATCHES = 5000; // 5-second delay after each batch
 
-      for (const student of absentStudents) {
-        try {
-          const phone = student.phone.startsWith('+') ? student.phone : `+${student.phone}`;
-          const message = `Dear Parent,\n${student.name} was absent on ${getCurrentLocalDate()}.`;
+      for (let i = 0; i < absentStudents.length; i += BATCH_SIZE) {
+        const batch = absentStudents.slice(i, i + BATCH_SIZE);
 
-          const response = await axios.post(
-            "https://wasenderapi.com/api/send-message",
-            { to: phone, text: message },
-            {
-              headers: {
-                'Authorization': `Bearer ${WASENDER_API_KEY}`,
-                'Content-Type': 'application/json'
-              },
-              timeout: 10000
+        // Process current batch
+        for (const student of batch) {
+          try {
+            const phone = student.phone.startsWith('+') ? student.phone : `+${student.phone}`;
+            const message = `Dear Parent,\n${student.name} was absent on ${getCurrentLocalDate()}.`;
+
+                  const response = await axios.post(
+                   import.meta.env.VITE_WASENDER_API_URL,
+                    { to: phone, text: message },
+                    {
+                      headers: {
+                        'Authorization': `Bearer ${import.meta.env.VITE_WASENDER_API_KEY}`,
+                  'Content-Type': 'application/json'
+                },
+                timeout: 10000
+              }
+            );
+
+            if (response.data?.success || response.data?.message_id) {
+              successfulSends++;
             }
-          );
-
-          if (response.data?.success || response.data?.message_id) {
-            successfulSends++;
+          } catch (error) {
+            console.error(`Failed to send to ${student.phone}:`, error);
           }
-        } catch (error) {
-          console.error(`Failed to send to ${student.phone}:`, error);
+
+          // Individual message delay (keep your existing 1-second delay)
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Add batch delay only if there are more messages to send
+        if (i + BATCH_SIZE < absentStudents.length) {
+          await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
+        }
       }
 
       setMessage(`Sent ${successfulSends}/${absentStudents.length} messages`);
@@ -264,7 +385,7 @@ function App() {
     }
 
     try {
-      const docRef = await addDoc(collection(db, 'batches'), {
+      const docRef = await addDoc(collection(db, getClientCollections().batches), {
         name: newBatch.trim(),
         createdAt: Timestamp.now()
       });
@@ -289,7 +410,7 @@ function App() {
     }
 
     try {
-      const docRef = await addDoc(collection(db, 'students'), {
+        const docRef = await addDoc(collection(db, getClientCollections().students), {
         name: newStudent.name.trim(),
         phone: newStudent.phone.trim(),
         batchId: newStudent.batchId,
@@ -316,7 +437,7 @@ function App() {
     if (!window.confirm('Delete this student?')) return;
 
     try {
-      await deleteDoc(doc(db, 'students', studentId));
+      await deleteDoc(doc(db, getClientCollections().students, studentId));
       setData(prev => ({
         ...prev,
         students: prev.students.filter(s => s.id !== studentId)
@@ -361,12 +482,12 @@ function App() {
         const message = `Dear Parent,\n${student.name} scored ${marks.obtained}/${testData.totalMarks} in ${testData.testName}.`;
 
         try {
-          const response = await axios.post(
-            "https://wasenderapi.com/api/send-message",
+            const response = await axios.post(
+              import.meta.env.VITE_WASENDER_API_URL,
             { to: phone, text: message },
             {
               headers: {
-                'Authorization': `Bearer ${WASENDER_API_KEY}`,
+                'Authorization': `Bearer ${import.meta.env.VITE_WASENDER_API_KEY}`,
                 'Content-Type': 'application/json'
               },
               timeout: 10000
@@ -426,7 +547,7 @@ function App() {
         <button onClick={() => setSelectedBatch(null)} className="back-button">
           ← Back to Batches
         </button>
-        
+
         <h2>{batch?.name} Attendance — {getCurrentLocalDate()}</h2>
 
 
@@ -778,7 +899,7 @@ function App() {
           </main>
 
           <footer className="app-footer">
-            <p>© {new Date().getFullYear()} School Attendance System</p>
+            <p>© {new Date().getFullYear()} Developed by Misbahuddin Syed</p>
           </footer>
         </>
       )}
